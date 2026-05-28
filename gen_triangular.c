@@ -6,7 +6,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-const double H_list[] = {1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0};
+const double H_list[] = {1.1, 1.2, 1.3};//{1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0};
 const double eta_list[] = {0.30, 0.35, 0.40, 0.45, 0.50, 0.55};
 
 int main(void) {
@@ -120,10 +120,10 @@ int main(void) {
             char filename[256];
             sprintf(filename, "triangular/trilat_H%.1f_eta%.2f.dat", H, eta);
             FILE *fp = fopen(filename, "w");
-            if (!fp) {
-                printf("Error opening file for writing.\n");
-                return 1;
-            }
+            //if (!fp) {
+            //    printf("Error opening file for writing.\n");
+            //    return 1;
+            //}
 
             fprintf(fp, "%d\n", N);
             //fprintf(fp, "\n"); // Blank line for Ovito format

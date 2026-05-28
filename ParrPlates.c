@@ -22,13 +22,13 @@
 #define N 1000
 
 #define N_BINS 200
-const double H_list[] = {2.0};//{1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0};
+const double H_list[] = {1.0, 1.1, 1.2, 1.3, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0};
 const double eta_list[] = {0.30, 0.35, 0.40, 0.45, 0.50, 0.55};
 
 /* Initialization variables */
-const int mc_steps = 10000; // production steps per density
+const int mc_steps = 100000; // production steps per density
 const int eq_steps = 50000; // Added equilibration steps before sampling g(r)
-const int output_steps = 100;
+const int output_steps = 250;
 const int sample_every = 10; // Sample g(r) every this many steps
 const double diameter = 1.0;
 
@@ -157,7 +157,7 @@ int move_particle(double delta){
 
 void write_data(double H, double eta, int step){
     char buffer[128];
-    sprintf(buffer, "data/coords/H%.1f_eta%.2f/coords_step%07d.dat", H, eta, step);
+    sprintf(buffer, "data/coords/triangular_steps/H%.1f_eta%.2f/coords_step%07d.dat", H, eta, step);            // ============ Make sure file pathing is correct for run ================
     FILE* fp = fopen(buffer, "w");
     int d, n;
     fprintf(fp, "%d\n\n", n_particles);
@@ -290,7 +290,7 @@ int main(int argc, char* argv[]){
 
             // Set init_frame based on current H and eta
             char init_frame[64];
-            snprintf(init_frame, sizeof(init_frame), "triangular/trilat_H%.1f_eta%.2f.dat", H, eta);
+            snprintf(init_frame, sizeof(init_frame), "triangular/trilat_H%.1f_eta%.2f.dat", H, eta);            // ============ Make sure file pathing is correct for run ================
 
             read_data(init_frame); // Re-read initial configuration for each density to start from the same state
 
@@ -368,9 +368,9 @@ int main(int argc, char* argv[]){
 
             // Write g(r) for this density
             char fname[64];
-            snprintf(fname, sizeof(fname), "data/gr/gr_H%.2f_eta%.2f.dat", H, eta);
+            snprintf(fname, sizeof(fname), "data/gr/triangular_gr/gr_H%.2f_eta%.2f.dat", H, eta);               // ============ Make sure file pathing is correct for run ================
             write_gr_inplane(fname, hist, n_samples, rho2d, r_max, dr);
-            snprintf(fname, sizeof(fname), "data/rhoz/rhoz_H%.2f_eta%.2f.dat", H, eta);
+            snprintf(fname, sizeof(fname), "data/rhoz/triangular_rhoz/rhoz_H%.2f_eta%.2f.dat", H, eta);         // ============ Make sure file pathing is correct for run ================
             write_rhoz(fname, zhist, n_samples, H, dz, area);
         }
     }
