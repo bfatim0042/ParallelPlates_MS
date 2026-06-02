@@ -29,7 +29,7 @@ const double eta_list[] = {0.30, 0.35, 0.40, 0.45, 0.50, 0.55};
 /* Initialization variables */
 const int mc_steps = 50000; // production steps per density
 const int eq_steps = 50000; // Added equilibration steps before sampling g(r)
-const int output_steps = 500;
+const int output_steps = 1000;
 const int sample_every = 10; // Sample g(r) every this many steps
 const double diameter = 1.0;
 
@@ -157,13 +157,6 @@ int move_particle(double delta){
 }
 
 void write_data(double H, double eta, int step) {
-    char folder_name[128];
-    snprintf(folder_name, sizeof(folder_name), "data/coords/square_steps/H%.1f_eta%.2f", H, eta);           // ============ Make sure file pathing is correct for run ================
-    if (_mkdir(folder_name) == 0) {
-        printf("Folder created successfully!\n");
-    } else {
-        printf("Unable to create folder. (It may already exist)\n");
-    }
     char buffer[128];
     snprintf(buffer, sizeof(buffer), "data/coords/square_steps/H%.1f_eta%.2f/coords_step%07d.dat", H, eta, step);            // ============ Make sure file pathing is correct for run ================
     FILE* fp = fopen(buffer, "w");
@@ -176,6 +169,7 @@ void write_data(double H, double eta, int step) {
     fclose(fp);
 }
 
+// not used in current code, but could be useful if we wanted to start from a single configuration and rescale to different packing fractions
 void set_packing_fraction_confined(double eta, double H) {
     double target_volume = (n_particles * particle_volume) / eta;
     double A_target = target_volume / H;
@@ -307,9 +301,6 @@ int main(int argc, char* argv[]){
             return 0;
             }
 
-            // Rescale box and positions to target packing fraction
-            set_packing_fraction_confined(eta, H);
-
             // Tune delta to get reasonable acceptance (0.3 - 0.5)
             double delta_local = 0.05 * diameter;
             assert(delta_local > 0.0);
@@ -352,6 +343,14 @@ int main(int argc, char* argv[]){
             // production + g(r) sampling
             accepted = 0;
             long n_samples = 0;
+
+            char folder_name[128];
+            snprintf(folder_name, sizeof(folder_name), "data/coords/square_steps/H%.1f_eta%.2f", H, eta);           // ============ Make sure file pathing is correct for run ================
+            if (_mkdir(folder_name) == 0) {
+                printf("Folder created successfully!\n");
+            } else {
+                printf("Unable to create folder. (It may already exist)\n");
+            }
 
             for(int step = 0; step < mc_steps; step++){
                 for(int n = 0; n < n_particles; n++){
