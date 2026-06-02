@@ -12,6 +12,7 @@
 #include <time.h>
 #include <assert.h>
 #include <math.h>
+#include <direct.h>
 #include "mt19937.h"
 
 #ifndef M_PI
@@ -155,9 +156,16 @@ int move_particle(double delta){
     return 1;
 }
 
-void write_data(double H, double eta, int step){
+void write_data(double H, double eta, int step) {
+    char folder_name[128];
+    snprintf(folder_name, sizeof(folder_name), "data/coords/square_steps/H%.1f_eta%.2f", H, eta);           // ============ Make sure file pathing is correct for run ================
+    if (_mkdir(folder_name) == 0) {
+        printf("Folder created successfully!\n");
+    } else {
+        printf("Unable to create folder. (It may already exist)\n");
+    }
     char buffer[128];
-    sprintf(buffer, "data/coords/square_steps/H%.1f_eta%.2f/coords_step%07d.dat", H, eta, step);            // ============ Make sure file pathing is correct for run ================
+    snprintf(buffer, sizeof(buffer), "data/coords/square_steps/H%.1f_eta%.2f/coords_step%07d.dat", H, eta, step);            // ============ Make sure file pathing is correct for run ================
     FILE* fp = fopen(buffer, "w");
     int d, n;
     fprintf(fp, "%d\n\n", n_particles);
