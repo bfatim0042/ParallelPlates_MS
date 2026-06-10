@@ -23,8 +23,8 @@
 #define N 1000
 
 #define N_BINS 200
-const double H_list[] = {1.0, 1.1, 1.2, 1.3, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0};
-const double eta_list[] = {0.30, 0.35, 0.40, 0.45, 0.50, 0.55};
+const double H_list[] = {2.0}; //{1.0, 1.1, 1.2, 1.3, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0};
+const double eta_list[] = {0.40}; //{0.30, 0.35, 0.40, 0.45, 0.50, 0.55};
 
 /* Initialization variables */
 const int mc_steps = 50000; // production steps per density
@@ -39,8 +39,13 @@ double radius;
 double particle_volume;
 double r[N][NDIM];
 double box[NDIM];
-
 double box_min[NDIM], box_max[NDIM]; // Added these to store box limits globally
+
+/* Compression/Expansion stage */
+const int ENABLE_COMPRESSION = 1; // Set to 1 to enable compression stage
+const double eta_target = 0.50;   // Target packing fraction for compression stage
+const int compression_steps = 25000; // Number of steps for compression stage
+const int post_compression_eq_steps = 50000; // Additional equilibration steps after compression
 
 int wall_hit_count = 0;
 
@@ -158,7 +163,7 @@ int move_particle(double delta){
 
 void write_data(double H, double eta, int step) {
     char buffer[128];
-    snprintf(buffer, sizeof(buffer), "data/coords/square_steps/H%.1f_eta%.2f/coords_step%07d.dat", H, eta, step);            // ============ Make sure file pathing is correct for run ================
+    snprintf(buffer, sizeof(buffer), "run2/data/coords/square_steps/H%.1f_eta%.2f/coords_step%07d.dat", H, eta, step);            // ============ Make sure file pathing is correct for run ================
     FILE* fp = fopen(buffer, "w");
     int d, n;
     fprintf(fp, "%d\n\n", n_particles);
@@ -169,23 +174,27 @@ void write_data(double H, double eta, int step) {
     fclose(fp);
 }
 
-// not used in current code, but could be useful if we wanted to start from a single configuration and rescale to different packing fractions
-void set_packing_fraction_confined(double eta, double H) {
-    double target_volume = (n_particles * particle_volume) / eta;
-    double A_target = target_volume / H;
-    double L_xy = sqrt(A_target); // assuming square footprint
-    double scale_x = L_xy / box[0];
-    double scale_y = L_xy / box[1];
-    for (int n = 0; n < n_particles; n++) {
-        r[n][0] *= scale_x;
-        r[n][1] *= scale_y;
-        // z stays as-is, just clamp to walls
-        if (r[n][2] < box_min[2] + radius) r[n][2] = box_min[2] + radius;
-        if (r[n][2] > box_max[2] - radius) r[n][2] = box_max[2] - radius;
+void write_data_compress(double H, double eta, int step) {
+    char buffer[128];
+    snprintf(buffer, sizeof(buffer), "run2/data/compress/square_steps/H%.1f_eta%.2f-%.2f/compress_step%07d.dat", H, eta, eta_target, step);            // ============ Make sure file pathing is correct for run ================
+    FILE* fp = fopen(buffer, "w");
+    int d, n;
+    fprintf(fp, "%d\n\n", n_particles);
+    for(n = 0; n < n_particles; ++n){
+        for(d = 0; d < NDIM; ++d) fprintf(fp, "%f\t", r[n][d]);
+        fprintf(fp, "%lf\n", diameter/2.0);
     }
-    box[0] *= scale_x; box_max[0] = box_min[0] + box[0];
-    box[1] *= scale_y; box_max[1] = box_min[1] + box[1];
-    box[2] = H; box_max[2] = box_min[2] + H;
+    fclose(fp);
+}
+
+// Scaling box for compression/expansion stage to reach target packing fraction eta_target
+void scale_box_step(double scale_xy) {
+    box[0] *= scale_xy; box_max[0] = box_min[0] + box[0];
+    box[1] *= scale_xy; box_max[1] = box_min[1] + box[1];
+    for (int i = 0; i < n_particles; i++) {
+        r[i][0] = box_min[0] + (r[i][0] - box_min[0]) * scale_xy;
+        r[i][1] = box_min[1] + (r[i][1] - box_min[1]) * scale_xy;
+    }
 }
 
 // g(r) functions
@@ -340,12 +349,74 @@ int main(int argc, char* argv[]){
             }
             printf("Tuned delta = %.4f, final acceptance = %.2f%%\n", delta_local, 100.0 * accepted / (double)(1000.0 * n_particles));
 
+            // Compression/Expansion stage
+            if (ENABLE_COMPRESSION && eta_target != eta) {
+                double scale_total = sqrt(eta / eta_target); // Total scaling factor to reach target packing fraction
+                double scale_per_step = pow(scale_total, 1.0 / compression_steps); // Scaling factor per step
+                accepted = 0;
+
+                char folder_name[128];
+                snprintf(folder_name, sizeof(folder_name), "run2/data/compress/square_steps/H%.1f_eta%.2f-%.2f", H, eta, eta_target);           // ============ Make sure file pathing is correct for run ================
+                if (_mkdir(folder_name) == 0) {
+                    printf("Folder created successfully!\n");
+                } else {
+                    printf("Unable to create folder. (It may already exist)\n");
+                }
+
+                for (int step = 0; step < compression_steps; step++) {
+                    scale_box_step(scale_per_step);
+
+                    for (int n = 0; n < n_particles; n++) {
+                        accepted += move_particle(delta_local);
+                    }
+
+                    if ((step + 1) % 1000 == 0) {
+                        double rate = (double)accepted / (1000.0 * n_particles);
+                        if (rate < 0.20) delta_local *= 0.9;
+                        if (rate > 0.40) delta_local *= 1.1;
+                        delta_local = fmax(1e-4, fmin(delta_local, 0.5 * diameter));
+                        accepted = 0;
+                    }
+
+                    if(step % output_steps == 0){
+                        printf("Step %d. Move acceptance = %.2f%%\tWall hits = %d\n", step, 100.0 * accepted / (double)(output_steps * n_particles), wall_hit_count);
+                        write_data_compress(H, eta, step);
+                        accepted = 0;
+                        wall_hit_count = 0;
+                    }
+                }
+                //Recompute all box-derived quantities for production stage
+                area   = box[0] * box[1];
+                rho2d  = n_particles / area;
+                r_max  = fmin(box[0], box[1]) * 0.5;
+                dr     = r_max / N_BINS;
+                printf("Compression/Expansion done. Final eta = %.4f, rho2d = %.6f\n", n_particles * particle_volume / (area * H), rho2d);
+
+                // Post-compression/expansion equilibration
+                accepted = 0;
+                for (int step = 0; step < post_compression_eq_steps; step++) {
+                    for (int n = 0; n < n_particles; n++) {
+                        accepted += move_particle(delta_local);
+                    }
+
+                    if ((step + 1) % 1000 == 0) {
+                        double rate = (double)accepted / (1000.0 * n_particles);
+                        if (rate < 0.20) delta_local *= 0.9;
+                        if (rate > 0.40) delta_local *= 1.1;
+                        delta_local = fmax(1e-4, fmin(delta_local, 0.5 * diameter));
+                        accepted = 0;
+                    }
+                }
+                printf("Post-compression equilibration done. Tuned delta = %.4f, final acceptance = %.2f%%\n", delta_local, 100.0 * accepted / (double)(1000.0 * n_particles));
+            }
+
+
             // production + g(r) sampling
             accepted = 0;
             long n_samples = 0;
 
             char folder_name[128];
-            snprintf(folder_name, sizeof(folder_name), "data/coords/square_steps/H%.1f_eta%.2f", H, eta);           // ============ Make sure file pathing is correct for run ================
+            snprintf(folder_name, sizeof(folder_name), "run2/data/coords/square_steps/H%.1f_eta%.2f", H, (ENABLE_COMPRESSION ? eta_target : eta));           // ============ Make sure file pathing is correct for run ================
             if (_mkdir(folder_name) == 0) {
                 printf("Folder created successfully!\n");
             } else {
@@ -375,9 +446,9 @@ int main(int argc, char* argv[]){
 
             // Write g(r) for this density
             char fname[64];
-            snprintf(fname, sizeof(fname), "data/gr/square_gr/gr_H%.2f_eta%.2f.dat", H, eta);               // ============ Make sure file pathing is correct for run ================
+            snprintf(fname, sizeof(fname), "run2/data/gr/square_gr/gr_H%.2f_eta%.2f.dat", H, (ENABLE_COMPRESSION ? eta_target : eta));               // ============ Make sure file pathing is correct for run ================
             write_gr_inplane(fname, hist, n_samples, rho2d, r_max, dr);
-            snprintf(fname, sizeof(fname), "data/rhoz/square_rhoz/rhoz_H%.2f_eta%.2f.dat", H, eta);         // ============ Make sure file pathing is correct for run ================
+            snprintf(fname, sizeof(fname), "run2/data/rhoz/square_rhoz/rhoz_H%.2f_eta%.2f.dat", H, (ENABLE_COMPRESSION ? eta_target : eta));         // ============ Make sure file pathing is correct for run ================
             write_rhoz(fname, zhist, n_samples, H, dz, area);
         }
     }
