@@ -40,7 +40,7 @@ double particle_volume;
 double r[N][NDIM];
 double box[NDIM];
 double box_min[NDIM], box_max[NDIM]; // Added these to store box limits globally
-const double theta_deg = 10.0;
+const double theta_deg = 2.0;
 const double theta_rad = theta_deg * M_PI / 180.0; // Convert to radians
 
 int wall_hit_count = 0;
@@ -115,12 +115,15 @@ int move_particle(double delta){
 // z move
 r[i][2] += (2.0 * dsfmt_genrand() - 1.0) * delta;
 
+// (handles non-zero box_min)
+double center_x = box_min[0] + 0.5 * box[0];
+
 // Tilted upper wall
 double z_bottom = box_min[2] + radius;
 
 double z_top =
     box_max[2]
-    + tan(theta_rad) * (r[i][0] - 0.5 * box[0])
+    + tan(theta_rad) * (r[i][0])
     - radius;
 
 // Reject if particle crosses either wall
@@ -308,10 +311,10 @@ int main(int argc, char* argv[]){
             printf("rho2d = %.6f, area = %.4f\n", rho2d, area);
 
             // Confinement range due to tilted walls 
-            double H_min = H - 0.5 * box[0] * tan(theta_rad);
-            double H_max =  H + 0.5 * box[0] * tan(theta_rad);
-            printf("Tilt angle = %.2f degrees\n", theta_deg);
-            printf("Confinement range = %.3f -> %.3f\n", H_min, H_max);
+            //double H_min = H - 0.5 * box[0] * tan(theta_rad);
+            //double H_max =  H + 0.5 * box[0] * tan(theta_rad);
+            //printf("Tilt angle = %.2f degrees\n", theta_deg);
+            //printf("Confinement range = %.3f -> %.3f\n", H_min, H_max);
 
             // r_max = half the shortest box side
             double r_max = fmin(box[0], box[1]) * 0.5;
