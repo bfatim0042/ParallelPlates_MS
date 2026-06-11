@@ -1,0 +1,504 @@
+///#-- ========================================================================================
+//#--               Modelling and Simulation Project #13
+//#-- ========================================================================================
+// Anisotropic NPT version of parallel plates (x, y volume moves only)
+
+#include <stdio.h>
+#include <time.h>
+#include <assert.h>
+#include <math.h>
+#include <sys/stat.h>
+#include "mt19937.h"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define NDIM 3
+#define N 1000
+
+#define N_BINS 200
+const double H_list[] = {1.0, 1.5, 2.5, 3.0}; //{1.0, 1.1, 1.2, 1.3, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0};
+const double eta_list[] = {0.40}; //{0.30, 0.35, 0.40, 0.45, 0.50, 0.55};
+const double deltaV = 2.0; // max trial volume change (V = area*H)
+const double betaP = 1.0;   // reduced pressure beta*P
+
+/* Initialization variables */
+const int mc_steps = 50000; // production steps per density
+const int eq_steps = 50000; // Added equilibration steps before sampling g(r)
+const int output_steps = 1000;
+const int sample_every = 10; // Sample g(r) every this many steps
+const double diameter = 1.0;
+
+/* Simulation variables */
+int n_particles;
+double radius;
+double particle_volume;
+double r[N][NDIM];
+double box[NDIM];
+double box_min[NDIM], box_max[NDIM]; // Added these to store box limits globally
+
+
+int wall_hit_count = 0;
+
+/* Functions */
+void read_data(const char *filename){
+    FILE *fp = fopen(filename, "r");
+    assert(fp != NULL);
+
+    // Read number of particles
+    assert(fscanf(fp, "%d", &n_particles) == 1);
+
+    assert(n_particles <= N);
+
+    // Read box limits (min max for each dimension)
+    for(int d = 0; d < NDIM; d++){
+        assert(fscanf(fp, "%lf %lf", &box_min[d], &box_max[d]) == 2);
+        box[d] = box_max[d] - box_min[d];
+    }
+
+    // Read particle coordinates
+    for(int i = 0; i < n_particles; i++){
+
+        double dummy;  // fourth column (ignored)
+
+        assert(fscanf(fp, "%lf %lf %lf %lf",
+                      &r[i][0],
+                      &r[i][1],
+                      &r[i][2],
+                      &dummy) == 4);
+    }
+
+    fclose(fp);
+
+    // debug check
+    printf("Read %d particles\n", n_particles);
+
+    for(int d = 0; d < NDIM; d++)
+        printf("Box[%d] = %f\n", d, box[d]);
+
+    for(int i = 0; i < 3; i++){
+        printf("Particle %d: %f %f %f\n",
+               i, r[i][0], r[i][1], r[i][2]);
+    }
+}
+
+
+int move_particle(double delta){
+    // Pick random particle
+    int i = (int)(dsfmt_genrand() * n_particles);
+
+    // Store old position
+    double old_pos[NDIM];
+    for (int d = 0; d < NDIM; d++) {
+        old_pos[d] = r[i][d];
+    }
+
+    // Trial move
+    // x and y: periodic boundaries
+    for (int d = 0; d < 2; d++) {
+        r[i][d] += (2.0 * dsfmt_genrand() - 1.0) * delta;;
+
+        // Periodic boundaries
+        if (r[i][d] < box_min[d]) {
+            r[i][d] += box[d];
+        }
+        if (r[i][d] >= box_max[d]) {
+            r[i][d] -= box[d];
+        }
+    }
+    // z: hard walls at box_min[2] and box_max[2]
+    r[i][2] += (2.0 * dsfmt_genrand() - 1.0) * delta;
+    if (r[i][2] < box_min[2] + radius || r[i][2] > box_max[2] - radius) {
+        // Reject move if wall is hit
+        for (int d = 0; d < NDIM; d++) {
+            r[i][d] = old_pos[d];
+        }
+        wall_hit_count++;
+        return 0;
+    }
+
+    // Overlap checking
+    for (int j = 0; j < n_particles; j++) {
+
+        if (i == j) continue; // Do not check distance to the same particle we are moving
+
+        double dist2 = 0.0;
+
+        for (int d = 0; d < 2; d++) { // Check in x and y
+            double dx = r[i][d] - r[j][d];
+
+            // Ensure periodic boundaries with nearest image convention
+            if (dx > 0.5 * box[d]) dx -= box[d];
+            if (dx < -0.5 * box[d]) dx += box[d];
+
+            dist2 += dx * dx; // Add distance in dimension to total distance
+        }
+
+        double dz = r[i][2] - r[j][2]; // Check in z without periodic boundaries
+        dist2 += dz * dz;
+
+        // If distance < diameter -> overlap
+        if (dist2 < diameter * diameter - 1e-12) {
+            // Move is rejected: dimension values are returned to old position
+            for (int d = 0; d < NDIM; d++) {
+                r[i][d] = old_pos[d];
+            }
+
+            return 0;
+        }
+    }
+
+    // No overlap then accept move
+    return 1;
+}
+
+void write_data(double H, double eta, int step) {
+    double area = box[0] * box[1];
+
+    char folder[128];
+    snprintf(folder, sizeof(folder), "run3/data/coords/square_steps/H%.1f_P%.2f", H, betaP);
+    mkdir(folder, 0755); // ensure directory exists
+
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "%s/coords_step%07d.dat", folder, step);
+    FILE* fp = fopen(buffer, "w");
+    int d, n;
+    fprintf(fp, "%d\n\n", n_particles);
+    for(n = 0; n < n_particles; ++n){
+        for(d = 0; d < NDIM; ++d) fprintf(fp, "%f\t", r[n][d]);
+        fprintf(fp, "%lf\n", diameter/2.0);
+    }
+    fclose(fp);
+}
+
+int change_volume(void) {
+    // Current volume V = area * H
+    double area = box[0] * box[1];
+    double H = box[2];
+    double vold = area * H;
+
+    // Save old coordinates and box
+    double r_old[N][NDIM];
+    for (int i = 0; i < n_particles; i++)
+        for (int d = 0; d < NDIM; d++)
+            r_old[i][d] = r[i][d];
+    double box_old[NDIM];
+    for (int d = 0; d < NDIM; d++) box_old[d] = box[d];
+    double box_max_old[NDIM];
+    for (int d = 0; d < NDIM; d++) box_max_old[d] = box_max[d];
+
+    // Propose volume change in [-deltaV, deltaV]
+    double volchange = (2.0 * dsfmt_genrand() - 1.0) * deltaV;
+    double vnew = vold + volchange;
+    if (vnew <= 0.0) return 0; // reject
+
+    // New area (keep H fixed)
+    double anew = vnew / H;
+    if (anew <= 0.0) return 0;
+
+    double scale = sqrt(anew / area); // scale factor for x and y
+
+    double boxnew[NDIM];
+    boxnew[0] = box[0] * scale;
+    boxnew[1] = box[1] * scale;
+    boxnew[2] = box[2];
+
+    double box_max_new[NDIM];
+    box_max_new[0] = box_min[0] + boxnew[0];
+    box_max_new[1] = box_min[1] + boxnew[1];
+    box_max_new[2] = box_max[2];
+
+    // Scale trial coordinates in x and y about box_min
+    for (int i = 0; i < n_particles; i++) {
+        r[i][0] = box_min[0] + (r_old[i][0] - box_min[0]) * scale;
+        r[i][1] = box_min[1] + (r_old[i][1] - box_min[1]) * scale;
+        // z unchanged
+        r[i][2] = r_old[i][2];
+    }
+
+    // Check overlaps using minimum image in x,y and direct z
+    for (int i = 0; i < n_particles - 1; i++) {
+        for (int j = i + 1; j < n_particles; j++) {
+            double dist2 = 0.0;
+            double dx = r[i][0] - r[j][0];
+            if (dx > 0.5 * boxnew[0]) dx -= boxnew[0];
+            if (dx < -0.5 * boxnew[0]) dx += boxnew[0];
+            dist2 += dx * dx;
+
+            double dy = r[i][1] - r[j][1];
+            if (dy > 0.5 * boxnew[1]) dy -= boxnew[1];
+            if (dy < -0.5 * boxnew[1]) dy += boxnew[1];
+            dist2 += dy * dy;
+
+            double dz = r[i][2] - r[j][2];
+            dist2 += dz * dz;
+
+            if (dist2 < diameter * diameter - 1e-12) {
+                // if overlap, reject and restore
+                for (int ii = 0; ii < n_particles; ii++)
+                    for (int d = 0; d < NDIM; d++)
+                        r[ii][d] = r_old[ii][d];
+                for (int d = 0; d < NDIM; d++) { box[d] = box_old[d]; box_max[d] = box_max_old[d]; }
+                return 0;
+            }
+        }
+    }
+
+    // Metropolis acceptance: V = A*H so it is updated
+    double accr = -betaP * H * (anew - area) + n_particles * log(anew / area);
+    if (dsfmt_genrand() < exp(accr)) {
+        // accept: update box and box_max (coords already in r)
+        box[0] = boxnew[0]; box[1] = boxnew[1]; // box[2] unchanged
+        box_max[0] = box_max_new[0]; box_max[1] = box_max_new[1];
+        return 1;
+    } else {
+        // reject and restore old coords
+        for (int ii = 0; ii < n_particles; ii++)
+            for (int d = 0; d < NDIM; d++)
+                r[ii][d] = r_old[ii][d];
+        for (int d = 0; d < NDIM; d++) { box[d] = box_old[d]; box_max[d] = box_max_old[d]; }
+        return 0;
+    }
+}
+
+// g(r) functions
+
+/* Loops over all unique pairs (i < j), computes seperation using minimum image convention
+Use r_max = box_min / 2 to never cross minimum image boundaries
+hist[b] counts pairs whose distance falls in [b*dr, (b+1)*dr]
+Add 2 because its a pair, representing both directions*/
+
+// In-plane g(r) for confined system (only x and y dimentsions)
+void accumulate_gr_inplane(double *hist, double r_max, double dr) {
+    for (int i = 0; i < n_particles - 1; i++) {
+        for (int j = i + 1; j < n_particles; j++) {
+            double dx = r[i][0] - r[j][0];
+            double dy = r[i][1] - r[j][1];
+            // Minimum image convention for x and y
+            if (dx > 0.5 * box[0]) dx -= box[0];
+            if (dx < -0.5 * box[0]) dx += box[0];
+            if (dy > 0.5 * box[1]) dy -= box[1];
+            if (dy < -0.5 * box[1]) dy += box[1];
+            double dist = sqrt(dx * dx + dy * dy);
+            if (dist < r_max) {
+                int b = (int)(dist / dr);
+                if (b < N_BINS) hist[b] += 2.0; // Each pair contributes to g(r) twice (i,j and j,i)
+            }
+        }
+    }
+}
+
+
+/* Normalises histogram and writes it to file
+Normalisation (Eq. 8.2):
+    g(r + 0.5*dr) = hist[b] / (N * n_samples * n_ideal(b))
+    
+2D ideal gas:
+    n_ideal(b) = rho2d * pi * ((r_high)^2 - (r_low^2))
+    where r_high = (b+1)*dr and r_low = b*dr
+*/
+void write_gr_inplane(const char *fname, double *hist, long n_samples, double rho2d, double r_max, double dr) {
+    FILE *fp = fopen(fname, "w");
+    assert(fp != NULL);
+    fprintf(fp, "# r/sigma g(r) (rho2d=%.4f, n=%d, samples=%ld)\n", rho2d, n_particles, n_samples);
+
+    double norm = (double)n_particles * (double)n_samples;
+
+    for (int b = 0; b < N_BINS; b++) {
+        double r_low = b * dr;
+        double r_high = r_low + dr;
+        double r_mid = r_low + 0.5 * dr;
+        // 2D ideal gas
+        double n_ideal = rho2d * M_PI * (r_high * r_high - r_low * r_low); // Area of annulus
+        double gr = (n_ideal > 0.0) ? hist[b] / (norm * n_ideal) : 0.0; // Avoid division by zero
+        fprintf(fp, "%.6f %.6f\n", r_mid, gr);
+    }
+    fclose(fp);
+    printf("g(r) written to %s\n", fname);
+}
+
+// Density profile rho(z)
+#define N_ZBINS 200
+void accumulate_rho_z(double *hist, double dz) {
+    for (int i = 0; i < n_particles; i++) {
+        int b = (int)((r[i][2] - box_min[2]) / dz);
+        if (b >= 0 && b < N_ZBINS) hist[b] += 1.0;
+    }
+}
+
+void write_rhoz(const char *fname, double *zhist, long n_samples, double H, double dz, double area) {
+    FILE *fp = fopen(fname, "w");
+    assert(fp != NULL);
+    fprintf(fp, "# z\trho(z)\n");
+    for (int b = 0; b < N_ZBINS; b++) {
+        double z_mid = box_min[2] + (b + 0.5) * dz;
+        double rhoz = zhist[b] / (n_samples * area * dz);
+        fprintf(fp, "%.6f %.6f\n", z_mid, rhoz);
+    }
+    fclose(fp);
+    printf("Density profile rho(z) written to %s\n", fname);
+}
+
+// Main
+int main(int argc, char* argv[]){
+
+    assert(diameter > 0.0);
+
+    radius = 0.5 * diameter;
+
+    if(NDIM == 3) particle_volume = M_PI * pow(diameter, 3.0) / 6.0;
+    else if(NDIM == 2) particle_volume = M_PI * pow(radius, 2.0);
+    else{
+        printf("Number of dimensions NDIM = %d, not supported.", NDIM);
+        return 0;
+    }
+
+    dsfmt_seed(time(NULL));
+
+    // Loop over H and eta
+    for (int H_idx = 0; H_idx < sizeof(H_list)/sizeof(H_list[0]); H_idx++) {
+        for (int eta_idx = 0; eta_idx < sizeof(eta_list)/sizeof(eta_list[0]); eta_idx++){
+
+            double H = H_list[H_idx];
+            double eta = eta_list[eta_idx];
+            printf("\n===| H = %.2f, eta = %.2f |===\n", H, eta);
+
+            // Set init_frame based on current H and eta
+            char init_frame[64];
+            snprintf(init_frame, sizeof(init_frame), "square/sqlat_H%.1f_eta%.2f.dat", H, eta);            // ============ Make sure file pathing is correct for run ================
+
+            read_data(init_frame); // Re-read initial configuration for each density to start from the same state
+            printf("n_particles = %d\n", n_particles);
+
+            if(n_particles == 0){
+            printf("Error: Number of particles, n_particles = 0.\n");
+            return 0;
+            }
+
+            // Tune delta to get reasonable acceptance (0.3 - 0.5)
+            double delta_local = 0.05 * diameter;
+            assert(delta_local > 0.0);
+
+            // number density rho = N / V
+            double area = box[0] * box[1];
+            double rho2d = n_particles / area;
+            printf("rho2d = %.6f, area = %.4f\n", rho2d, area);
+
+            // r_max = half the shortest box side
+            double r_max = fmin(box[0], box[1]) * 0.5;
+            double dr = r_max / N_BINS;
+
+            // zero histogram
+            double hist[N_BINS];
+            for(int b = 0; b < N_BINS; b++) hist[b] = 0.0;
+
+            // zero z histogram
+            double zhist[N_ZBINS];
+            for(int b = 0; b < N_ZBINS; b++) zhist[b] = 0.0;
+            double dz = H / N_ZBINS;
+
+            // equilibration
+            int accepted = 0;
+            int vol_accepted = 0;
+            for(int step = 0; step < eq_steps; step++) {
+                for(int n = 0; n < n_particles; n++){
+                    accepted += move_particle(delta_local);
+                }
+                // attempt one volume move per step
+                vol_accepted += change_volume();
+
+                if ((step + 1) % 1000 == 0) {
+                    double rate = (double)accepted / (1000.0 * n_particles);
+                    if (rate < 0.20) delta_local *= 0.9;
+                    if (rate > 0.40) delta_local *= 1.1;
+                    delta_local = fmax(1e-4, fmin(delta_local, 0.5 * diameter));
+                    accepted = 0;
+                }
+            }
+            printf("Tuned delta = %.4f, final acceptance = %.2f%%\n", delta_local, 100.0 * accepted / (double)(1000.0 * n_particles));
+
+            // production + g(r) sampling
+            accepted = 0;
+            vol_accepted = 0;
+            long n_samples = 0;
+
+            char folder_name[128];
+            snprintf(folder_name, sizeof(folder_name), "run3/data/coords/square_steps/H%.1f_P%.2f", H, betaP);           // identify by pressure P
+            if (mkdir(folder_name, 0755) == 0) {
+                printf("Folder created successfully!\n");
+            } else {
+            }
+
+            for(int step = 0; step < mc_steps; step++){
+                for(int n = 0; n < n_particles; n++){
+                    accepted += move_particle(delta_local);
+                }
+
+                // attempt one volume move per MC step
+                vol_accepted += change_volume();
+
+                if(step % sample_every == 0){
+                    // recompute before sampling 
+                    area = box[0] * box[1];
+                    rho2d = (double)n_particles / area;
+                    r_max = fmin(box[0], box[1]) * 0.5;
+                    dr = r_max / N_BINS;
+                    dz = box[2] / N_ZBINS;
+
+                    accumulate_gr_inplane(hist, r_max, dr);
+                    accumulate_rho_z(zhist, dz);
+                    n_samples++;
+                }
+
+                if(step % output_steps == 0){
+                    // Recompute instantaneous area and eta 
+                    double area_now = box[0] * box[1];
+                    double eta_now = (n_particles * particle_volume) /
+                                    (area_now * box[2]);
+
+                    double move_acc =
+                        100.0 * accepted /
+                        (double)(output_steps * n_particles);
+
+                    double vol_acc =
+                        100.0 * vol_accepted /
+                        (double)output_steps;
+
+                    printf(
+                        "Step %6d | eta %.4f | area %.1f | move %.1f%% | vol %.1f%%\n",
+                        step,
+                        eta_now,
+                        area_now,
+                        move_acc,
+                        vol_acc
+                    );
+
+                    write_data(H, eta, step);
+                    accepted = 0;
+                    wall_hit_count = 0;
+                    vol_accepted = 0;
+                }
+            }
+
+            printf("Production done. Samples = %ld\n", n_samples);
+
+            // recompute quantities for normalisation
+            area = box[0] * box[1];
+            rho2d = (double)n_particles / area;
+            r_max = fmin(box[0], box[1]) * 0.5;
+            dr = r_max / N_BINS;
+            dz = box[2] / N_ZBINS;
+
+            // write g(r) for this density
+            char fname[64];
+            snprintf(fname, sizeof(fname), "run3/data/gr/square_gr/gr_H%.2f_P%.2f.dat", H, betaP);               // identify by pressure P
+            write_gr_inplane(fname, hist, n_samples, rho2d, r_max, dr);
+            snprintf(fname, sizeof(fname), "run3/data/rhoz/square_rhoz/rhoz_H%.2f_P%.2f.dat", H, betaP);         // identify by pressure P
+            write_rhoz(fname, zhist, n_samples, H, dz, area);
+        }
+    }
+
+    printf("\nDone.\n");
+    return 0;
+}
